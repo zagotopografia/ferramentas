@@ -239,7 +239,7 @@ small.hint.warn { color: var(--accent-text); }
 
 <!-- Diálogo: cliente -->
 <dialog id="dlgCliente" aria-labelledby="dcTitle">
-  <form id="fCliente" novalidate>
+  <form id="fCliForm" novalidate>
     <div class="dlg-head">
       <h2 id="dcTitle">Novo cliente</h2>
       <button type="button" class="x" data-close aria-label="Fechar">×</button>
@@ -749,7 +749,7 @@ $('fcDel').onclick = excluirCliente;
   updateProjetoHints();
 }));
 $('fProjeto').addEventListener('submit', saveProjeto);
-$('fCliente').addEventListener('submit', saveCliente);
+$('fCliForm').addEventListener('submit', saveCliente);
 document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => b.closest('dialog').close()));
 document.querySelectorAll('dialog').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
 
