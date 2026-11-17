@@ -301,6 +301,11 @@ small.hint.warn { color: var(--accent-text); }
    ============================================================ */
 const API_URL = 'https://script.google.com/macros/s/AKfycbwAlXvkHl7sP7DUN1onmi3uNJkgyH3_oCAK_NbmVtRS1M24L2LU-D3qJFmQAYm-GHFX/exec';
 
+/* ---------- Cache local (mostra a última lista na hora e atualiza em seguida) ---------- */
+const CACHE_KEY = 'projetos_cache_v1';
+function lerCache() { try { return JSON.parse(localStorage.getItem(CACHE_KEY)); } catch (_) { return null; } }
+function gravarCache(d) { try { localStorage.setItem(CACHE_KEY, JSON.stringify(d)); } catch (_) {} }
+
 /* ---------- Estado ---------- */
 const MESES = ['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
 const state = {
@@ -352,6 +357,7 @@ async function load(silent) {
   if (!silent) $('syncText').textContent = 'Atualizando…';
   try {
     state.data = await apiGet();
+    gravarCache(state.data);
     state.loadedAt = Date.now();
     $('error').hidden = true;
     $('syncText').textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -548,226 +554,4 @@ function fillSelects(selectedServ, ano) {
   const y = new Date().getFullYear();
   const anos = new Set(); for (let a = y - 4; a <= y + 1; a++) anos.add(a);
   if (ano) anos.add(Number(ano));
-  $('fpAno').innerHTML = '<option value="">Ano</option>' + [...anos].sort((a, b) => b - a).map(a => `<option>${a}</option>`).join('');
-}
-
-function openProjeto(row) {
-  const p = row ? projetos().find(x => x.row === row) : null;
-  state.editProjeto = p ? { row: p.row, original: { id: p.id, cliente: p.cliente, imovel: p.imovel, seq: p.seq } } : null;
-  state.seqTouched = !!p;
-  $('dpTitle').textContent = p ? 'Editar projeto' : 'Novo projeto';
-  $('fpSave').textContent = p ? 'Salvar alterações' : 'Salvar projeto';
-  $('fpDel').hidden = !p;
-  $('fpPastaBox').hidden = !(p && p.pasta);
-  $('fpPastaCopy').dataset.copy = p ? (p.pasta || '') : '';
-  $('fpPastaVal').textContent = p ? (p.pasta || '') : '';
-  $('dlClientes').innerHTML = clientes().map(c => `<option value="${esc(c.nome)}"></option>`).join('');
-
-  const hoje = new Date();
-  const criado = p ? p.criado : `${hoje.getFullYear()}-${pad3(hoje.getMonth() + 1).slice(1)}`;
-  fillSelects(p ? p.servico : '', criado.slice(0, 4));
-  $('fpCliente').value = p ? p.cliente : '';
-  $('fpImovel').value = p ? p.imovel : '';
-  $('fpSeq').value = p && p.seq !== '' ? p.seq : '';
-  $('fpMat').value = p ? p.matricula : '';
-  $('fpMes').value = criado ? criado.slice(5, 7) : '';
-  $('fpAno').value = criado ? criado.slice(0, 4) : '';
-  $('fpErr').hidden = true;
-  updateProjetoHints();
-  $('dlgProjeto').showModal();
-  if (!p) $('fpCliente').focus();
-}
-
-function updateProjetoHints() {
-  const nome = $('fpCliente').value;
-  const existe = findCliente(nome);
-  const hint = $('fpCliHint');
-  if (norm(nome) && !existe) { hint.textContent = 'Cliente novo: será cadastrado na aba Clientes.'; hint.className = 'hint warn'; }
-  else { hint.textContent = ''; hint.className = 'hint'; }
-
-  // número automático para novos projetos
-  if (!state.editProjeto && !state.seqTouched) {
-    $('fpSeq').value = norm(nome) ? nextSeq(nome) : '';
-  }
-  const seq = $('fpSeq').value === '' ? (norm(nome) ? nextSeq(nome) : '') : Number($('fpSeq').value);
-  const dup = projetos().find(p => norm(p.cliente) === norm(nome) && seq !== '' && Number(p.seq) === seq &&
-    !(state.editProjeto && p.row === state.editProjeto.row));
-  const sh = $('fpSeqHint');
-  if (dup) { sh.textContent = 'Este cliente já tem o projeto nº ' + pad3(seq) + '.'; sh.className = 'hint warn'; }
-  else { sh.textContent = ''; sh.className = 'hint'; }
-
-  // pré-visualização do ID (mesma regra da planilha)
-  const c = findCliente(nome);
-  const cid = c ? c.id : (norm(nome) ? pad3(clientes().length + 1) : '');
-  const sv = findServico($('fpServ').value);
-  const prev = $('idPreview');
-  if (!cid) { prev.innerHTML = '<span class="ph">—</span>'; return; }
-  prev.innerHTML = `${esc(cid)}-${pad3(seq === '' ? 0 : seq)}-${sv ? esc(sv.id) : '<span class="ph">···</span>'}`;
-}
-
-async function saveProjeto(ev) {
-  ev.preventDefault();
-  const err = $('fpErr');
-  const cliente = norm($('fpCliente').value);
-  const mes = $('fpMes').value, ano = $('fpAno').value;
-  if (!cliente) return showErr(err, 'Informe o cliente.');
-  if (!!mes !== !!ano) return showErr(err, 'Escolha mês e ano, ou deixe os dois em branco.');
-  const data = {
-    cliente, imovel: $('fpImovel').value.trim(), seq: $('fpSeq').value,
-    matricula: $('fpMat').value.trim(), servico: $('fpServ').value, criado: mes && ano ? `${ano}-${mes}` : ''
-  };
-  const payload = state.editProjeto
-    ? { action: 'updateProjeto', row: state.editProjeto.row, original: state.editProjeto.original, data }
-    : { action: 'addProjeto', data };
-  const wasEdit = !!state.editProjeto;
-  const antes = new Set(projetos().map(p => p.row));
-  await submit($('fpSave'), err, payload, $('dlgProjeto'), wasEdit ? 'Alterações salvas' : 'Projeto salvo', () => {
-    if (wasEdit) return;
-    // novo projeto: mostra o nome da pasta gerado na coluna H
-    const novo = projetos().find(p => !antes.has(p.row));
-    if (novo && novo.pasta) {
-      $('dsCopy').dataset.copy = novo.pasta;
-      $('dsVal').textContent = novo.pasta;
-      $('dlgSalvo').showModal();
-    }
-  });
-}
-
-async function excluirProjeto() {
-  const e = state.editProjeto;
-  if (!e) return;
-  const p = projetos().find(x => x.row === e.row);
-  const nome = p ? [p.id, p.cliente, p.imovel].filter(Boolean).join(' · ') : 'este projeto';
-  const ok = await askConfirm('Excluir projeto?', `“${nome}” será removido da planilha. Isso não pode ser desfeito pelo site.`, 'Excluir projeto');
-  if (!ok) return;
-  await submit($('fpDel'), $('fpErr'), { action: 'deleteProjeto', row: e.row, original: e.original }, $('dlgProjeto'), 'Projeto excluído');
-}
-
-/* ---------- Diálogo de cliente ---------- */
-function openCliente(row) {
-  const c = row ? clientes().find(x => x.row === row) : null;
-  state.editCliente = c ? { row: c.row, nome: c.nome } : null;
-  $('dcTitle').textContent = c ? 'Editar cliente' : 'Novo cliente';
-  $('fcSave').textContent = c ? 'Salvar alterações' : 'Salvar cliente';
-  $('fcNome').value = c ? c.nome : '';
-  $('fcHint').textContent = c ? 'Renomear atualiza também os projetos deste cliente.' : '';
-  $('fcHint').className = 'hint';
-  $('fcErr').hidden = true;
-  const qtd = c ? qtdProjetos(c.nome) : 0;
-  $('fcDel').hidden = !c;
-  $('fcDel').disabled = qtd > 0;
-  $('fcDel').title = qtd > 0 ? 'Exclua ou mova os projetos deste cliente primeiro.' : '';
-  if (c && qtd > 0) {
-    $('fcHint').textContent = `Renomear atualiza também os projetos deste cliente. Para excluir, remova antes os ${qtd} projeto(s) dele.`;
-  }
-  $('dlgCliente').showModal();
-  $('fcNome').focus();
-}
-
-async function saveCliente(ev) {
-  ev.preventDefault();
-  const err = $('fcErr');
-  const nome = norm($('fcNome').value);
-  if (!nome) return showErr(err, 'Informe o nome do cliente.');
-  const payload = state.editCliente
-    ? { action: 'updateCliente', row: state.editCliente.row, originalNome: state.editCliente.nome, nome }
-    : { action: 'addCliente', nome };
-  await submit($('fcSave'), err, payload, $('dlgCliente'), state.editCliente ? 'Alterações salvas' : 'Cliente salvo');
-}
-
-async function excluirCliente() {
-  const e = state.editCliente;
-  if (!e) return;
-  if (qtdProjetos(e.nome) > 0) return showErr($('fcErr'), 'Este cliente ainda tem projetos. Exclua os projetos primeiro.');
-  const ok = await askConfirm('Excluir cliente?', `“${e.nome}” será removido da planilha. Isso não pode ser desfeito pelo site.`, 'Excluir cliente');
-  if (!ok) return;
-  await submit($('fcDel'), $('fcErr'), { action: 'deleteCliente', row: e.row, nome: e.nome }, $('dlgCliente'), 'Cliente excluído');
-}
-
-/* ---------- Envio comum ---------- */
-function showErr(el, msg) { el.textContent = msg; el.hidden = false; }
-
-async function submit(btn, errEl, payload, dlg, okMsg, after) {
-  const label = btn.textContent;
-  btn.disabled = true; btn.textContent = 'Aguarde…'; errEl.hidden = true;
-  try {
-    state.data = await apiPost(payload);
-    state.loadedAt = Date.now();
-    $('syncText').textContent = 'Atualizado às ' + new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
-    dlg.close();
-    render();
-    toast(okMsg);
-    if (after) after();
-  } catch (e) {
-    showErr(errEl, friendly(e));
-  } finally {
-    btn.disabled = false; btn.textContent = label;
-  }
-}
-
-let toastTimer;
-function toast(msg) {
-  const t = $('toast');
-  t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
-}
-
-/* ---------- Eventos ---------- */
-$('tabProjetos').onclick = () => { state.tab = 'projetos'; render(); };
-$('tabClientes').onclick = () => { state.tab = 'clientes'; render(); };
-$('btnNovo').onclick = () => state.tab === 'projetos' ? openProjeto() : openCliente();
-$('btnRefresh').onclick = () => load(false);
-$('q').oninput = e => { state.q = e.target.value; render(); };
-$('fCliente').onchange = e => { state.fCliente = e.target.value; render(); };
-$('fServico').onchange = e => { state.fServico = e.target.value; render(); };
-
-$('tbl').addEventListener('click', e => {
-  const sortBtn = e.target.closest('[data-sort]');
-  if (sortBtn) {
-    const s = state.sort[state.tab], k = sortBtn.dataset.sort;
-    s.dir = s.key === k && s.dir === 'asc' ? 'desc' : 'asc'; s.key = k;
-    return render();
-  }
-  const cp = e.target.closest('[data-copy]');
-  if (cp) { e.stopPropagation(); return doCopy(cp, cp.dataset.copy); }
-  const edit = e.target.closest('[data-edit]'), cedit = e.target.closest('[data-cedit]');
-  const tr = e.target.closest('tr');
-  if (edit) return openProjeto(Number(edit.dataset.edit));
-  if (cedit) return openCliente(Number(cedit.dataset.cedit));
-  if (tr && tr.dataset.row) return openProjeto(Number(tr.dataset.row));
-  if (tr && tr.dataset.crow) return openCliente(Number(tr.dataset.crow));
-});
-
-$('fpPastaCopy').onclick = e => doCopy(e.currentTarget, e.currentTarget.dataset.copy);
-$('dsCopy').onclick = e => doCopy(e.currentTarget, e.currentTarget.dataset.copy);
-$('fpDel').onclick = excluirProjeto;
-$('fcDel').onclick = excluirCliente;
-
-['fpCliente', 'fpSeq', 'fpServ'].forEach(id => $(id).addEventListener('input', () => {
-  if (id === 'fpSeq') state.seqTouched = true;
-  updateProjetoHints();
-}));
-$('fProjeto').addEventListener('submit', saveProjeto);
-$('fCliForm').addEventListener('submit', saveCliente);
-document.querySelectorAll('[data-close]').forEach(b => b.addEventListener('click', () => b.closest('dialog').close()));
-document.querySelectorAll('dialog').forEach(d => d.addEventListener('click', e => { if (e.target === d) d.close(); }));
-
-// Como qualquer pessoa pode editar a planilha, atualiza ao voltar para a aba
-document.addEventListener('visibilitychange', () => {
-  const aberto = document.querySelector('dialog[open]');
-  if (!document.hidden && API_URL && !aberto && Date.now() - state.loadedAt > 45000) load(true);
-});
-
-/* ---------- Início ---------- */
-if (!API_URL) {
-  $('setup').hidden = false;
-  $('stats').textContent = 'Configuração pendente';
-  $('btnRefresh').hidden = true;
-} else {
-  $('app').hidden = false;
-  load(false);
-}
-</script>
-</body>
-</html>
+  $('fpAno').innerHTML = '<option value="">Ano</option>' + [...anos].sort((a,
